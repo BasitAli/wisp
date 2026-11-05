@@ -15,12 +15,12 @@ from . import settle
 from . import step_kinds
 
 # Steps asked of the planner per turn. The plan says "one to three" and the
-# longest recorded sequence in tests/fixtures/teach (the file-export case)
+# longest recorded sequence in tests/fixtures/replan (the file-export case)
 # needs three consecutive steps with no screen change between them.
 PLAN_STEPS = 3
 
 # Planner calls one walkthrough may make, the first plan included. The
-# recorded multi-step sequences in tests/fixtures/teach take at most four
+# recorded multi-step sequences in tests/fixtures/replan take at most four
 # plans (tests/test_replan.py asserts it), so six leaves two turns for a
 # user who strays and needs one correction each.
 DEFAULT_TURN_BUDGET = 6

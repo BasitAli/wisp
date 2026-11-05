@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the synthetic multi-step teach fixtures under tests/fixtures/teach/.
+"""Draw the synthetic multi-step teach fixtures under tests/fixtures/replan/.
 
 Each case is a recapture sequence: the screen the user sees before each
 planner turn, drawn here with PIL (640x400 mock windows, never a real
@@ -13,6 +13,9 @@ a second time) so the loop has something to correct.
 A case directory is also a valid U1 case: `case.json` keeps the first
 screen's capture, reply, expected step and `elements` at the top level, so
 the first-step scorer (`wisp.gauntlet.score_teach_cases`) reads it as-is.
+They live apart from the U1 battery in tests/fixtures/teach so its baseline
+(docs/ACCURACY.md) stays the current planner's numbers; score them with
+`python scripts/gauntlet.py --teach-offline tests/fixtures/replan`.
 The extra keys are `after` (which screen follows when the user presses a
 labelled control), `then` (screens 1..n, each with capture, reply, elements
 and `after`), `expected_delivery` (the labels Wisp should point at, in
@@ -26,7 +29,7 @@ import pathlib
 from PIL import Image, ImageDraw, ImageFont
 
 OUT = (pathlib.Path(__file__).resolve().parent.parent
-       / "tests" / "fixtures" / "teach")
+       / "tests" / "fixtures" / "replan")
 W, H = 640, 400
 BG, BAR, FG = (30, 32, 38), (52, 56, 66), (225, 228, 235)
 CTRL, EDGE = (74, 80, 94), (110, 118, 136)

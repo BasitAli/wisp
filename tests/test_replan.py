@@ -15,7 +15,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 from wisp import replan, walkthrough as wt, walkthrough_run as wr  # noqa: E402
 
-CASES = HERE / "fixtures" / "teach"
+CASES = HERE / "fixtures" / "replan"
 SNAPSHOT = HERE / "fixtures" / "replan_prompt.txt"
 MONS = [{"x": 0, "y": 0, "width": 1000, "height": 1000, "scale": 1}]
 _TMP = None

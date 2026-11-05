@@ -193,6 +193,29 @@ def settings_night_light():
     }
 
 
+# -- terminal-split-pane: a one-step answer ("how do I split this pane"):
+# the first reply is the whole lesson --
+def terminal_split():
+    s0 = Scene("Terminal")
+    s0.plain([0, 24, W, H - 24], "demo@box:~$ _")
+    s0.control("Split pane", [560, 2, 70, 18])
+    s1 = Scene("Terminal")
+    s1.plain([0, 24, W // 2, H - 24], "demo@box:~$ _")
+    s1.plain([W // 2, 24, W // 2, H - 24], "demo@box:~$ _")
+    s1.control("Split pane", [560, 2, 70, 18])
+    first = reply(step("Press Split pane at the top right.", "Split pane",
+                       "A split puts a second shell beside this one."))
+    return {
+        "id": "terminal-split-pane", "app": "terminal",
+        "goal": "split this terminal pane",
+        "expected_kind": "click",
+        "expected_target": {"label": "Split pane", "rect": [560, 2, 70, 18]},
+        "screens": [(s0, first, {"Split pane": 1}), (s1, EMPTY, {})],
+        "expected_delivery": ["Split pane"],
+        "expected_plans": 2,
+    }
+
+
 def write(case):
     d = OUT / case["id"]
     d.mkdir(parents=True, exist_ok=True)
@@ -216,6 +239,7 @@ def write(case):
 
 
 if __name__ == "__main__":
-    for make in (writer_export, browser_group, settings_night_light):
+    for make in (writer_export, browser_group, settings_night_light,
+                 terminal_split):
         write(make())
     print("wrote", OUT)

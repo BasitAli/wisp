@@ -101,6 +101,45 @@ def teach_intent(text: str) -> str | None:
     return goal
 
 
+# A bare "how do I X" is a one-line fact more often than a lesson ("how do
+# I open a new tab", "how do I undo this"), and the fast path answers those.
+# It teaches only when X starts with a verb that names a task (probed on
+# the fast path: it answers every "how do I ..." as question_word, so
+# routing "through it first" would never reach the planner). The planner
+# then decides: one step is spoken and pointed as the whole answer, more
+# than one runs as a walkthrough. [teach] auto = "false" turns this off.
+_HOWTO = re.compile(
+    r"^\s*(?:(?:hey\s+)?wisp[,\s]+)?(?:ok(?:ay)?[,\s]+)?(?:please\s+)?"
+    r"(?:how\s+(?:do|can|would|should)\s+(?:i|we)|how\s+to)\s+"
+    r"(.+?)[\s.!?]*$", re.IGNORECASE | re.DOTALL)
+_TASK_VERB = re.compile(
+    r"^(?:export|import|set\s*up|configure|install|create|make|build|share|"
+    r"publish|merge|rebase|crop|resize|format|back\s*up|connect|enable|"
+    r"disable|change|customi[sz]e|add|remove|record|schedule|sync|transfer|"
+    r"convert|compress|extract|print|sign|split|combine|rotate)\b",
+    re.IGNORECASE)
+ONE_STEP_PREFIX = "howto: "
+
+
+def howto_intent(text: str) -> str | None:
+    """The goal in a bare "how do I <task verb> ..." question, else None.
+    Reuses the not-procedure guard, so "how do I know..." stays out."""
+    m = _HOWTO.match(text or "")
+    goal = m.group(1).strip() if m else ""
+    if not goal or _NOT_PROCEDURE.match(goal) \
+            or not _TASK_VERB.match(goal):
+        return None
+    return goal
+
+
+def split_one_step(goal: str) -> tuple:
+    """(goal, one_step) from a route detail made for `howto_intent`."""
+    g = goal or ""
+    if g.startswith(ONE_STEP_PREFIX):
+        return g[len(ONE_STEP_PREFIX):], True
+    return g, False
+
+
 def demo_intent(text: str) -> str | None:
     """The goal in "demonstrate X" requests: Wisp narrates and points at
     every step in one go, and the user does nothing."""
@@ -625,14 +664,16 @@ def run(goal: str, cfg: dict, state=None, *, ask=None,
         image_b64: str | None = None, interrupted=None, steps=None,
         env: _Env | None = None, ground=None, monitors=None,
         demonstrate: bool = False, skill_match=None,
-        resume: dict | None = None) -> str:
+        resume: dict | None = None, one_step: bool = False) -> str:
     """Plan and walk the user through `goal`. Returns "WALKED (n steps):
     <closing line>". With `demonstrate` every step is spoken and pointed
     at in turn without waiting for the user to act. A walkthrough that
     stops early is kept, and `resume` (a `paused()` dump) picks it up
     again with the goal and done steps intact. A walkthrough Wisp plans
     itself (not a demonstration or a saved lesson) re-plans from a fresh
-    capture whenever its steps run out or stop matching the screen."""
+    capture whenever its steps run out or stop matching the screen. With
+    `one_step` (a bare "how do I X"), a plan of exactly one step is spoken
+    and pointed as the whole answer, with nothing to wait for."""
     env = env or _Env(cfg, state, interrupted=interrupted,
                       cursor=click_watch.hypr_cursor,
                       frame=_window_frame(), capture=_recapture(cfg))
@@ -666,6 +707,11 @@ def run(goal: str, cfg: dict, state=None, *, ask=None,
         if not planned:
             return ("WALKED (0 steps): I couldn't work out steps for that, "
                     "try asking more specifically.")
+        if one_step and live and len(planned) == 1:
+            step = planned[0]
+            env.say(spoken(step), snap_point(step, env.cfg, ground=ground,
+                                             monitors=monitors))
+            return "WALKED (1 steps): "       # quiet close: the step was it
         wt = _wt.Walkthrough(goal, planned)
     keep = not demonstrate
     current = [None]

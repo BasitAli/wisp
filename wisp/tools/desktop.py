@@ -91,13 +91,72 @@ def launch(app: str, cfg: dict, harness: dict | None = None) -> str:
     return f"LAUNCHED {app} -> {binname}"
 
 
+_FOCUS_PREFIX = re.compile(
+    r"^\s*(please\s+)?(?:focus|switch to|bring(?:\s+up)?|go to|show)\s+"
+    r"(?:the\s+|my\s+)?",
+    re.I)
+_FOCUS_NOISE = re.compile(
+    r"\b(window|tab|in chrome|chrome|browser|please)\b", re.I)
+
+
+def focus_needle(text: str) -> str:
+    """'Focus OpenRouter' / 'switch to gmail' → needle for title match."""
+    if not text:
+        return ""
+    q = _FOCUS_PREFIX.sub("", text).strip().rstrip(".!?")
+    q = _FOCUS_NOISE.sub(" ", q)
+    return re.sub(r"\s+", " ", q).strip()
+
+
+def _match_by_title(needle: str) -> dict | None:
+    """Best client whose title contains needle (case-insensitive)."""
+    if not needle or len(needle) < 2:
+        return None
+    n = needle.casefold()
+    hits = []
+    for w in clients():
+        title = w.get("title") or ""
+        if n in title.casefold() and w.get("address"):
+            hits.append(w)
+    if not hits:
+        return None
+    # Prefer shorter titles (tighter match) then stable address order
+    hits.sort(key=lambda w: (len(w.get("title") or ""), w.get("address")))
+    return hits[0]
+
+
+def focus_by_title(needle: str) -> str:
+    from .. import platform
+    w = _match_by_title(needle)
+    if not w:
+        return f"SKIP (no window title matching {needle!r})"
+    addr = w.get("address", "")
+    if not platform._try(platform.focus_address_cmds(addr)):
+        return f"SKIP (focus failed for {needle!r})"
+    # Confirm active address — hyprctl lies on miss
+    live = platform.active_window()
+    if live.get("address") != addr:
+        return f"SKIP (focus missed {needle!r})"
+    return f"FOCUSED title:{needle!r} ({w.get('class')}: {(w.get('title') or '')[:60]})"
+
+
 def focus(classname: str) -> str:
     from .. import platform
     # Require a live window — hyprctl returns ok even on miss
     # (warns "window not found"), so trust clients[] not exit code.
+    # Prefer address when several clients share a class (Chrome tabs/windows).
     target = _match_running_class([classname]) if classname else None
     if not target:
         return f"SKIP (no window matching class {classname!r})"
+    wins = [c for c in clients() if (c.get("class") or "") == target]
+    if len(wins) == 1 and wins[0].get("address"):
+        if platform._try(platform.focus_address_cmds(wins[0]["address"])):
+            return f"FOCUSED {target}"
+        return f"SKIP (no window matching class {target!r})"
+    # Ambiguous class — caller should use focus_by_title
+    if len(wins) > 1:
+        return (f"SKIP (ambiguous class {target!r}: {len(wins)} windows — "
+                f"say a title word, e.g. focus gmail)")
     cmds = platform.focus_cmds(target)
     if not cmds:
         return (f"SKIP (focus unsupported — "

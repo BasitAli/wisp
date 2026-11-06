@@ -525,8 +525,25 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
                 return "SKIP (launch but no app identified)"
             return tools.run("launch", app, cfg, harness)
         if tool_name == "focus":
-            # focus needs a Hyprland class, not the raw transcript
+            # Title first (multi Chrome/… windows), then app class.
+            # "focus openrouter" must not land on a random google-chrome.
             from .tools import desktop as _desk
+            needle = _desk.focus_needle(detail)
+            _APP_NEEDLES = {
+                "browser", "chrome", "firefox", "terminal", "kitty",
+                "slack", "spotify", "whatsapp", "zapfast", "files",
+                "strata", "vscode", "zed", "zeditor", "cursor", "code",
+                "settings", "music",
+            }
+            if needle:
+                titled = _desk.focus_by_title(needle)
+                if titled.startswith("FOCUSED"):
+                    return titled
+                generic = needle.casefold() in _APP_NEEDLES or (
+                    app and app != "none"
+                    and needle.casefold() == app.casefold())
+                if not generic:
+                    return titled  # specific title miss
             cls = (_desk.class_for_app(app, cfg, harness)
                    if app and app != "none" else None)
             if not cls:

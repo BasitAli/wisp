@@ -354,7 +354,8 @@ def plan(goal: str, cfg: dict, image_b64: str | None = None,
         content = [{"type": "text", "text": content},
                    {"type": "image_url", "image_url": {"url": url}}]
     try:
-        out = chat([{"role": "user", "content": content}], cfg, timeout=45)
+        out = chat([{"role": "user", "content": content}],
+                   brain.with_role(cfg, "teach"), timeout=45)
     except Exception as e:
         raise PlanError(str(e)) from e
     raw = out.get("content", "") if isinstance(out, dict) else ""

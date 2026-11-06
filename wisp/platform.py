@@ -372,16 +372,27 @@ def focus_cmds(cls: str) -> list[list]:
     return []
 
 
+def close_address_cmds(addr: str) -> list[list]:
+    """Close by Hyprland window address — the reliable 0.57 path."""
+    if not addr or current() != "linux":
+        return []
+    a = addr if addr.startswith("0x") else f"0x{addr}"
+    return [_eval(f'hl.dsp.window.close({{window="address:{a}"}})'),
+            _hypr("dispatch",
+                  f'hl.dsp.window.close({{window="address:{a}"}})')]
+
+
 def close_cmds(cls: str) -> list[list]:
     o = current()
     if o == "linux":
         dt = desktop()
         if dt in ("hyprland", "unknown"):
-            # Prefer Lua dsp (Hyprland 0.57); legacy closewindow/killactive
-            # often fail the same way focuswindow did.
+            # Prefer address close via close_address_cmds when possible.
+            # Class-based fallback for callers that only have a class.
             if not cls:
-                return [_eval("hl.dsp.window.close()"),
-                        _hypr("dispatch", "hl.dsp.window.close()")]
+                return [_eval('hl.dsp.window.close({window="activewindow"})'),
+                        _hypr("dispatch",
+                              'hl.dsp.window.close({window="activewindow"})')]
             return [_eval(
                 f'hl.dsp.window.close({{window="class:^{cls}"}})'),
                 _hypr("dispatch",

@@ -108,17 +108,30 @@ def focus(classname: str) -> str:
 
 
 def close(classname: str) -> str:
+    import time
     from .. import platform
-    # Same as focus: require a live class when one was named — hyprctl
-    # returns ok on miss. Empty classname = close the active window.
-    target = ""
+    # Always close by address. Bare hl.dsp.window.close() returns ok but
+    # often no-ops; verify the address is gone before claiming CLOSED.
     if classname:
-        target = _match_running_class([classname]) or ""
-        if not target:
+        target_cls = _match_running_class([classname]) or ""
+        if not target_cls:
             return f"SKIP (no window matching class {classname!r})"
-    if platform._try(platform.close_cmds(target)):
-        return f"CLOSED {target or 'active window'}"
-    return f"SKIP (nothing closed for {classname!r})"
+        addr = next((c.get("address", "") for c in clients()
+                     if (c.get("class") or "") == target_cls), "")
+        label = target_cls
+    else:
+        w = platform.active_window()
+        addr = w.get("address", "") or ""
+        label = w.get("class") or "active window"
+    if not addr:
+        return "SKIP (no active window to close)"
+    platform._try(platform.close_address_cmds(addr))
+    time.sleep(0.05)
+    if any(c.get("address") == addr for c in clients()):
+        time.sleep(0.1)
+        if any(c.get("address") == addr for c in clients()):
+            return f"SKIP (still open: {label} {addr})"
+    return f"CLOSED {label}"
 
 
 def workspace(n: str) -> str:

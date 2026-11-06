@@ -23,3 +23,19 @@ systemctl --user daemon-reload && systemctl --user restart wispd
 ```
 
 Point your NixOS glue at `whisper-cpp-vulkan` separately; this branch does not vendor models.
+
+## Updating from upstream
+
+When duketopceo/wisp ships a new release, **rebase this branch** — do not only
+reinstall an old tag:
+
+```fish
+git fetch upstream --tags
+git checkout nixos-hyprland
+git rebase upstream/vX.Y.Z    # or upstream/master
+git push --force-with-lease origin nixos-hyprland
+git tag -a vX.Y.Z-nixos.1 -m "vX.Y.Z + nixos-hyprland fixes"
+git push origin vX.Y.Z-nixos.1
+```
+
+Then `wispd install` from the new tag. Keep personal config out of this repo.

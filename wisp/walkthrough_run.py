@@ -606,11 +606,13 @@ class _Env:
         """(window, frame) now, to tell whether the user acted since."""
         return self.window(), (self.frame() if self.frame else None)
 
-    def say(self, text: str, point: dict | None) -> None:
-        """Publish the step (text + beacon) and speak it."""
+    def say(self, text: str, point: dict | None, teach: dict | None = None
+            ) -> None:
+        """Publish the step (text + beacon + teach marks) and speak it."""
         if self.state is not None:
             self.state.transition("speaking", answer=text,
-                                  points=[point] if point else [])
+                                  points=[point] if point else [],
+                                  teach=teach)
         if self._speak is not None:
             self._speak(text)
             return
@@ -991,6 +993,35 @@ def run(goal: str, cfg: dict, state=None, *, ask=None,
         return finish("all done.", completed=True)
 
 
+# Step kinds the overlay draws (plan KTD3) and what each one waits for.
+# An unknown kind is drawn as voice-confirm, the one kind that never
+# claims detection.
+STEP_KINDS = ("click", "hover", "area", "handle", "motion", "voice-confirm")
+WAIT_BY_KIND = {"click": "click", "hover": "rest", "area": "settle",
+                "handle": "settle", "motion": "settle",
+                "voice-confirm": "voice"}
+
+
+def teach_fields(step, index: int, total: int, wait: str | None = None
+                 ) -> dict:
+    """The state-bus `teach` object for one step. getattr keeps this
+    working before Step grows `kind` and `radius`."""
+    kind = getattr(step, "kind", "click")
+    if kind not in STEP_KINDS:
+        kind = "voice-confirm"
+    radius = getattr(step, "radius", None)
+    return {"kind": kind,
+            "radius": int(radius) if isinstance(radius, (int, float))
+            and not isinstance(radius, bool) and radius > 0 else None,
+            "index": max(1, int(index)), "total": max(int(index), int(total)),
+            "wait": wait or WAIT_BY_KIND[kind]}
+
+
+def _total(wt, ev) -> int:
+    """Steps in the lesson so far: the one waiting plus those queued."""
+    return int(ev.get("step_index", 1)) + len(getattr(wt, "_queue", ()))
+
+
 def spoken(step) -> str:
     """What is said for a step: the instruction, then why it matters."""
     why = (getattr(step, "why", "") or "").strip()
@@ -1057,11 +1088,6 @@ def _snap_step(env: _Env, step, ground, monitors):
     return pt
 
 
-def _announce(env: _Env, step, ground, monitors) -> None:
-    """Snap the step's point, then say and show it."""
-    env.say(spoken(step), _snap_step(env, step, ground, monitors))
-
-
 def _do_step(wt, ev, env: _Env, ask, ground, monitors):
     """Announce one step and wait for evidence that the user did it. The
     next event (a step, or a terminal one), or None to stop the
@@ -1069,7 +1095,8 @@ def _do_step(wt, ev, env: _Env, ask, ground, monitors):
     step = ev["step"]
     pt = _snap_step(env, step, ground, monitors)
     kind = _delivered_kind(step, pt, env)
-    env.say(spoken(step), pt)
+    env.say(spoken(step), pt,
+            teach_fields(step, ev.get("step_index", 1), _total(wt, ev)))
     if kind == step_kinds.VOICE_CONFIRM:
         return {"action": "await_voice"}
     watch = _watcher(kind, pt, step, env)
@@ -1116,7 +1143,9 @@ def _demo_step(wt, ev, env: _Env, ask, ground, monitors):
     """Say and point at one step, then move on: nothing is clicked, typed
     or waited for."""
     step = ev["step"]
-    _announce(env, step, ground, monitors)
+    pt = _snap_step(env, step, ground, monitors)
+    env.say(spoken(step), pt,
+            teach_fields(step, ev.get("step_index", 1), _total(wt, ev)))
     env.check()
     if env.interrupted():
         wt.cancel(env.state)

@@ -429,6 +429,10 @@ def is_low_confidence(answers: dict, cfg: dict) -> bool:
     tool = answers.get("tool", {}).get("choice")
     if route in ("dictation", "answer"):
         return False
+    # Focus resolves by window title ("focus jira") — app is often
+    # none/browser at <0.8 and the chooser just slows it down.
+    if tool == "focus":
+        return False
     # "close active app" → app=none at ~0.3 conf; chooser is noise
     app = answers.get("app", {}).get("choice")
     if (action == "close" or tool == "close") and \

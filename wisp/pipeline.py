@@ -425,7 +425,14 @@ def is_low_confidence(answers: dict, cfg: dict) -> bool:
     app is irrelevant (Jev often scores app=none at 0.6–0.7 and the
     chooser pops 'app:none' for no reason)."""
     route = answers.get("route", {}).get("choice")
+    action = answers.get("action", {}).get("choice")
+    tool = answers.get("tool", {}).get("choice")
     if route in ("dictation", "answer"):
+        return False
+    # "close active app" → app=none at ~0.3 conf; chooser is noise
+    app = answers.get("app", {}).get("choice")
+    if (action == "close" or tool == "close") and \
+            (not app or app == "none"):
         return False
     app_conf = answers.get("app", {}).get("confidence", 1)
     thresh = float(cfg.get("agent", {}).get("confidence_ambiguous", "0.8"))

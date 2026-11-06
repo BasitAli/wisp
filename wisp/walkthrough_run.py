@@ -560,7 +560,7 @@ class _Env:
     def __init__(self, cfg, state=None, speak=None, window=None,
                  sleep=time.sleep, clock=time.monotonic, check=None,
                  interrupted=None, cursor=None, frame=None, capture=None,
-                 tree=_DEFAULT):
+                 tree=_DEFAULT, registry=None):
         self.cfg, self.state = cfg, state
         # None means no source: the step is delivered as voice-confirm.
         self.cursor, self.frame = cursor, frame
@@ -569,6 +569,8 @@ class _Env:
         self.capture = capture
         self.tree = tree              # an ElementTree, or _DEFAULT: live
         self.snaps: dict = {}         # step key -> snap record, for the dump
+        from . import pointer
+        self.pointer = pointer.teaching_backend(cfg, registry)
         self._speak = speak
         self._window = window
         self.sleep, self.clock = sleep, clock

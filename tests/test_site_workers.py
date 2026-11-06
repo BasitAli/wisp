@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WorkersBundle(unittest.TestCase):
     def test_primary_domain_footer_reflects_completed_worker_cutover(self):
-        html = (ROOT / "site-3d/index.html").read_text()
+        html = (ROOT / "site-app/src/components/sections/sections.tsx").read_text()
         self.assertNotIn("deployment pending", html)
         self.assertIn("wisp.observer · Cloudflare Workers", html)
 
@@ -72,18 +72,18 @@ class WorkersBundle(unittest.TestCase):
                 capture_output=True, text=True,
             )
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIn("scene.mjs", (out / "index.html").read_text()
-                          + (out / "app.mjs").read_text())
-            self.assertTrue((out / "vendor/three.module.js").is_file())
-            for name in ("assets/wisp-flame/wisp-flame.glb",
-                         "assets/wisp-flame/idle-256.webp",
+            # The homepage (site-app/), its lazy hero chunk, /light/ and /plain/.
+            self.assertRegex((out / "index.html").read_text(), r'src="/app/index-[\w-]+\.js"')
+            self.assertEqual(1, len(list((out / "app").glob("hero-*.js"))))
+            for name in ("assets/wisp-flame/idle-256.webp",
                          "assets/wisp-flame/wisp-flame-32.png",
                          "assets/wisp-flame/wisp-flame-512.png",
-                         "vendor/loaders/GLTFLoader.js",
+                         "theme-init.js", "credits.txt", "light/index.html",
                          "plain/wisp-flame-130.png", "plain/wisp-flame-32.png"):
                 self.assertTrue((out / name).is_file(), name)
-            # No external URLs in the published page or the flame module.
-            for name in ("index.html", "flame.mjs", "plain/index.html"):
+            # No external URLs in the published pages or modules.
+            for name in ("index.html", "light/light.mjs", "plain/index.html",
+                         *(p.relative_to(out).as_posix() for p in (out / "app").glob("*.js"))):
                 self.assertNotRegex((out / name).read_text(),
                                     r"""<(?:img|script|link|source)\b[^>]*\b(?:src|href|srcset)=["']https?://|(?:from|import\()\s*["']https?://""", name)
             self.assertIn("wisp-flame-130.png", (out / "plain/index.html").read_text())

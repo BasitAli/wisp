@@ -97,7 +97,8 @@ class Snap(unittest.TestCase):
             return target(300, 400, (290, 390, 20, 20))
         step = wt.Step("Click Save", point={"x": 1, "y": 2}, label="Save")
         pt = wr.snap_point(step, {}, ground=ground, monitors=MONS)
-        self.assertEqual(pt, {"x": 300, "y": 400, "label": "Save"})
+        self.assertEqual((pt["x"], pt["y"], pt["label"]), (300, 400, "Save"))
+        self.assertEqual((pt["snap"], pt["via"]), ("ax", "ground"))
         self.assertEqual(calls, [("Save", "control,a11y")])
 
     def test_container_is_skipped_for_the_model_point(self):
@@ -367,7 +368,7 @@ class SkillPriming(unittest.TestCase):
 
     def test_no_skill_means_no_notes(self):
         p = self.prompt_for(W("t", "foot"), lambda cls: "")
-        self.assertNotIn("Notes about the app", p)
+        self.assertNotIn("Reference notes", p)
 
     def test_no_window_class_never_asks_for_a_skill(self):
         def boom(cls):

@@ -227,3 +227,88 @@ def clients() -> list:
         return json.loads(r.stdout)
     except json.JSONDecodeError:
         return []
+
+
+def client_addresses() -> set[str]:
+    return {c.get("address", "") for c in clients() if c.get("address")}
+
+
+def wait_for_class(classname: str, timeout_ms: int = 5000,
+                   before_addrs: set[str] | None = None) -> str:
+    """Poll Hyprland until a window of `classname` is focused.
+
+    If `before_addrs` is set (snapshot before launch), prefer a *new*
+    address; otherwise any matching class is enough (already-running).
+    """
+    import time
+    from .. import platform
+
+    want = (classname or "").casefold().strip()
+    if not want:
+        return "SKIP (wait_window empty class)"
+    deadline = time.monotonic() + max(timeout_ms, 100) / 1000.0
+
+    def _matches(w: dict) -> bool:
+        cls = (w.get("class") or "").casefold()
+        return cls == want or want in cls
+
+    while time.monotonic() < deadline:
+        wins = clients()
+        matches = [w for w in wins if _matches(w)]
+        if before_addrs is not None:
+            fresh = [w for w in matches
+                     if w.get("address", "") not in before_addrs]
+            if fresh:
+                matches = fresh
+        if matches:
+            # Prefer the most recently mapped (last in hypr list is fine)
+            target = matches[-1]
+            addr = target.get("address", "")
+            if addr:
+                platform._try(platform.focus_address_cmds(addr))
+                time.sleep(0.08)
+            active = platform.active_window()
+            if _matches(active) or (
+                    addr and active.get("address") == addr):
+                return f"WAITED {active.get('class') or target.get('class')}"
+            # Focused something else but window exists — still usable
+            return f"WAITED {target.get('class')}"
+        # Already focused matching class (launch returned FOCUSED)
+        active = platform.active_window()
+        if _matches(active):
+            return f"WAITED {active.get('class')}"
+        time.sleep(0.08)
+    return f"SKIP (wait_window timeout {classname!r})"
+
+
+def read_kitty(max_chars: int = 800) -> str:
+    """Pull visible screen text from the focused Kitty via remote control."""
+    import shutil
+    import time
+    from .. import platform
+
+    active = platform.active_window()
+    cls = (active.get("class") or "").casefold()
+    if "kitty" not in cls:
+        return "SKIP (read_kitty: focused window is not kitty)"
+    if not shutil.which("kitten") and not shutil.which("kitty"):
+        return "SKIP (read_kitty: kitty/kitten not on PATH)"
+    bin_ = "kitten" if shutil.which("kitten") else "kitty"
+    # Prefer get-text; fall back to kitty @ 
+    cmd = [bin_, "@", "get-text", "--extent", "screen"]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=5,
+                       env=hypr_env())
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()[:120]
+        return f"SKIP (read_kitty failed: {err or r.returncode})"
+    text = (r.stdout or "").strip()
+    if not text:
+        time.sleep(0.15)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5,
+                           env=hypr_env())
+        text = (r.stdout or "").strip()
+    if not text:
+        return "SKIP (read_kitty: empty screen)"
+    if len(text) > max_chars:
+        text = "…" + text[-max_chars:]
+    return f"READ {text}"

@@ -823,23 +823,31 @@ def run_listen(cfg: dict, state, wait_for_choice=None,
         else:
             route_tag = "local"
         if local_cmd is not None:
+            if local_cmd.action == "sequence":
+                route_tag = "local_seq"
             state.transition("acting")
             t_act = time.monotonic()
             result = local_router.run(local_cmd, cfg, harness)
             timing["jev_ms"] = 0
             timing["act_ms"] = round((time.monotonic() - t_act) * 1000)
+            seq_log = local_router.last_sequence_log() \
+                if route_tag == "local_seq" else None
             _trace.emit(turn, "dispatch", "act",
                         {"route": route_tag, "action": local_cmd.action,
-                         "arg": local_cmd.arg, "result": result})
+                         "arg": local_cmd.arg, "result": result,
+                         "steps": seq_log})
             state.transition("done", result=result)
             notify(result)
+            local_rec = {"action": local_cmd.action,
+                         "arg": local_cmd.arg,
+                         "press_enter": local_cmd.press_enter}
+            if seq_log:
+                local_rec["steps"] = seq_log
             log_decision({
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "transcript": text,
                 "router": route_tag,
-                "local": {"action": local_cmd.action,
-                          "arg": local_cmd.arg,
-                          "press_enter": local_cmd.press_enter},
+                "local": local_rec,
                 "result": result,
                 "timing_ms": timing,
             })

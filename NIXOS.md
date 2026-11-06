@@ -20,11 +20,14 @@ the installer’s `~/.config/wisp/`.
 - **`agent.jev=false`**: no OpenRouter at all; unmatched speech → dictation
   (`router: local_fallback`); enter trailer on type/`? press enter` works
 - **`audio.pause_media`**: pause MPRIS players (playerctl) while PTT is held
+- **Multi-step macros**: spoken `open … and type …`; `wait_window` after launch
+  (hyprctl poll); `commands.toml` `[[command.step]]`; `read_kitty` /
+  `agent.read_after_type` via `kitten @ get-text` (Kitty remote control)
 
 ## Install
 
 ```fish
-cd /tmp && git clone --depth 1 --branch v0.9.0-nixos.2 https://github.com/BasitAli/wisp.git
+cd /tmp && git clone --depth 1 --branch v0.9.0-nixos.3 https://github.com/BasitAli/wisp.git
 cd wisp && python3 wispd install
 systemctl --user daemon-reload && systemctl --user restart wispd
 ```

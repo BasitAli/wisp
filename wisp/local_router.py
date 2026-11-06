@@ -128,6 +128,28 @@ _APP_ALIASES = {
     "settings": "settings", "monitor": "monitor",
 }
 
+# App slot → Hyprland class for wait_window after launch
+_SLOT_WAIT_CLASS = {
+    "terminal": "kitty", "browser": "google-chrome", "firefox": "firefox",
+    "files": "strata", "vscode": "dev.zed.Zed", "code": "Code",
+    "cursor": "cursor", "slack": "slack", "music": "spotify",
+    "whatsapp": "zapfast", "monitor": "io.missioncenter.MissionCenter",
+}
+
+# Verbs that start a new spoken instruction (not "and press enter")
+_CHAIN_VERBS = (
+    r"open|launch|start|pull\s+up|focus|switch\s+to|bring(?:\s+up)?|"
+    r"type|dictate|write\s+this|close|quit|clear|select\s+all|"
+    r"undo|redo|copy|paste|cut|read\s+(?:the\s+)?(?:screen|output|response)"
+)
+_AND_SPLIT = re.compile(
+    rf"\s+and\s+(?:then\s+)?(?=(?:{_CHAIN_VERBS})\b)", re.I)
+_SEMI_SPLIT = re.compile(
+    rf"[.;]\s+(?=(?:{_CHAIN_VERBS})\b)", re.I)
+
+# Last sequence log for decisions.jsonl (set by run_sequence)
+_LAST_SEQ_LOG: list[dict] = []
+
 
 @dataclass(frozen=True)
 class LocalCmd:
@@ -135,6 +157,8 @@ class LocalCmd:
     arg: str = ""
     press_enter: bool = False
     require_class: str = ""
+    timeout_ms: int = 5000
+    steps: tuple = ()  # nested LocalCmd for action=sequence
 
 
 def _fold(s: str) -> str:
@@ -178,6 +202,40 @@ def load_registry() -> list[dict]:
     return cmds if isinstance(cmds, list) else []
 
 
+def _cmd_from_entry(entry: dict) -> LocalCmd | None:
+    """Build LocalCmd from a registry entry (single action or step list)."""
+    raw_steps = entry.get("step") or entry.get("steps") or []
+    if isinstance(raw_steps, list) and raw_steps:
+        steps: list[LocalCmd] = []
+        for s in raw_steps:
+            if not isinstance(s, dict):
+                continue
+            act = (s.get("action") or "").strip()
+            if not act:
+                continue
+            steps.append(LocalCmd(
+                action=act,
+                arg=str(s.get("arg") or ""),
+                press_enter=bool(s.get("press_enter")),
+                require_class=str(s.get("require_class") or ""),
+                timeout_ms=int(s.get("timeout_ms") or 5000),
+            ))
+        if not steps:
+            return None
+        return LocalCmd(action="sequence",
+                        steps=tuple(inject_waits(steps)))
+    action = (entry.get("action") or "").strip()
+    if not action:
+        return None
+    return LocalCmd(
+        action=action,
+        arg=str(entry.get("arg") or ""),
+        press_enter=bool(entry.get("press_enter")),
+        require_class=str(entry.get("require_class") or ""),
+        timeout_ms=int(entry.get("timeout_ms") or 5000),
+    )
+
+
 def match_registry(text: str) -> LocalCmd | None:
     folded = _fold(_first_clause(text))
     if not folded:
@@ -185,8 +243,10 @@ def match_registry(text: str) -> LocalCmd | None:
     best: tuple[int, LocalCmd] | None = None
     for entry in load_registry():
         phrases = entry.get("phrases") or []
-        action = (entry.get("action") or "").strip()
-        if not action or not phrases:
+        if not phrases:
+            continue
+        cand = _cmd_from_entry(entry)
+        if cand is None:
             continue
         for phrase in phrases:
             pf = _fold(phrase)
@@ -194,16 +254,70 @@ def match_registry(text: str) -> LocalCmd | None:
                 continue
             if folded != pf and not folded.startswith(pf) and pf not in folded:
                 continue
-            cand = LocalCmd(
-                action=action,
-                arg=str(entry.get("arg") or ""),
-                press_enter=bool(entry.get("press_enter")),
-                require_class=str(entry.get("require_class") or ""),
-            )
             score = len(pf)
             if best is None or score > best[0]:
                 best = (score, cand)
     return best[1] if best else None
+
+
+def split_instructions(text: str) -> list[str]:
+    """Split 'open X and type Y' into clauses (keeps 'type … and press enter')."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts: list[str] = []
+    for chunk in _SEMI_SPLIT.split(text):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts.extend(p.strip() for p in _AND_SPLIT.split(chunk) if p.strip())
+    return parts or [text]
+
+
+def wait_class_for_slot(slot: str) -> str:
+    return _SLOT_WAIT_CLASS.get((slot or "").casefold(), slot or "")
+
+
+def inject_waits(cmds: list[LocalCmd]) -> list[LocalCmd]:
+    """After launch, insert wait_window before the next type/keys/read."""
+    out: list[LocalCmd] = []
+    for i, c in enumerate(cmds):
+        out.append(c)
+        if c.action != "launch":
+            continue
+        nxt = cmds[i + 1] if i + 1 < len(cmds) else None
+        if not nxt or nxt.action == "wait_window":
+            continue
+        if nxt.action in ("type", "keys", "read_kitty"):
+            cls = wait_class_for_slot(c.arg)
+            if cls:
+                out.append(LocalCmd(action="wait_window", arg=cls,
+                                    timeout_ms=c.timeout_ms or 5000))
+    return out
+
+
+def plan_sequence_from_clauses(clauses: list[str]) -> LocalCmd | None:
+    if len(clauses) < 2:
+        return None
+    cmds: list[LocalCmd] = []
+    for i, clause in enumerate(clauses):
+        c = match_registry(clause) or match_builtin(clause)
+        if c is None:
+            if i == len(clauses) - 1:
+                c = fallback_dictation(clause)
+            if c is None:
+                return LocalCmd(
+                    action="sequence",
+                    arg=f"ABORT unmatched: {clause!r}",
+                    steps=tuple(cmds),  # partial — run() will abort
+                )
+        if c.action == "sequence":
+            cmds.extend(c.steps)
+        else:
+            cmds.append(c)
+    if len(cmds) < 2 and not any(x.action == "wait_window" for x in cmds):
+        return cmds[0] if cmds else None
+    return LocalCmd(action="sequence", steps=tuple(inject_waits(cmds)))
 
 
 def parse_key_spec(spoken: str) -> str | None:
@@ -337,11 +451,30 @@ def match_builtin(text: str) -> LocalCmd | None:
             slot = _APP_ALIASES.get(name.casefold(), name)
             return LocalCmd(action="close_app", arg=slot)
 
+    # "read the screen" / "read output" → kitty get-text
+    if re.match(
+            r"^\s*(?:please\s+)?read\s+(?:the\s+)?"
+            r"(?:screen|output|response|that)\s*[.!]?\s*$", raw, re.I):
+        return LocalCmd(action="read_kitty")
+
     return None
 
 
 def match(text: str) -> LocalCmd | None:
-    return match_registry(text) or match_builtin(text)
+    # Named macros (incl. multi-step) on the full first-clause phrase
+    reg = match_registry(text)
+    if reg is not None:
+        return reg
+    clauses = split_instructions(text)
+    if len(clauses) > 1:
+        seq = plan_sequence_from_clauses(clauses)
+        if seq is not None:
+            return seq
+    return match_builtin(text)
+
+
+def last_sequence_log() -> list[dict]:
+    return list(_LAST_SEQ_LOG)
 
 
 def fallback_dictation(text: str) -> LocalCmd | None:
@@ -419,8 +552,60 @@ def press_keys(spec: str) -> str:
     return f"KEYS {spec}" if ok else "SKIP (wtype failed)"
 
 
-def run(cmd: LocalCmd, cfg: dict, harness: dict | None = None) -> str:
+def _retarget_type_to_active() -> None:
+    """After wait/focus, point dictation restore at the new window."""
+    from . import pipeline, platform
+    addr = platform.active_window().get("address", "") or ""
+    pipeline._type_target_address = addr
+
+
+def run_sequence(steps: tuple | list, cfg: dict,
+                 harness: dict | None = None) -> str:
+    """Run LocalCmd steps; abort on SKIP/ERROR from a hard failure."""
+    global _LAST_SEQ_LOG
+    from .tools import desktop
+
+    _LAST_SEQ_LOG = []
+    results: list[str] = []
+    before_addrs: set[str] | None = None
+    for step in steps:
+        if not isinstance(step, LocalCmd):
+            continue
+        if step.action == "launch":
+            before_addrs = desktop.client_addresses()
+        if step.action == "wait_window":
+            out = desktop.wait_for_class(
+                step.arg, timeout_ms=step.timeout_ms or 5000,
+                before_addrs=before_addrs)
+            before_addrs = None
+            if out.startswith("WAITED"):
+                _retarget_type_to_active()
+        else:
+            out = run(step, cfg, harness, _in_sequence=True)
+            if step.action in ("launch", "focus_title") and \
+                    out.startswith(("LAUNCHED", "FOCUSED")):
+                _retarget_type_to_active()
+        _LAST_SEQ_LOG.append({
+            "action": step.action, "arg": step.arg,
+            "press_enter": step.press_enter, "result": out,
+        })
+        results.append(out)
+        if out.startswith(("SKIP", "ERROR", "BLOCKED", "ABORT")):
+            return f"SEQ abort ({len(results)}): " + "; ".join(results)
+    return f"SEQ ({len(results)}): " + "; ".join(results)
+
+
+def run(cmd: LocalCmd, cfg: dict, harness: dict | None = None,
+        _in_sequence: bool = False) -> str:
     from .tools import desktop, system
+
+    if cmd.action == "sequence":
+        if cmd.arg.startswith("ABORT") and not cmd.steps:
+            return f"SKIP ({cmd.arg})"
+        if cmd.arg.startswith("ABORT"):
+            # unmatched mid-chain: run nothing useful
+            return f"SKIP ({cmd.arg})"
+        return run_sequence(cmd.steps, cfg, harness)
 
     if cmd.require_class and not _class_ok(cmd.require_class):
         return (f"SKIP (require_class={cmd.require_class!r}, "
@@ -430,6 +615,18 @@ def run(cmd: LocalCmd, cfg: dict, harness: dict | None = None) -> str:
         return desktop.focus_by_title(cmd.arg)
     if cmd.action == "launch":
         return desktop.launch(cmd.arg, cfg, harness)
+    if cmd.action == "wait_window":
+        out = desktop.wait_for_class(
+            cmd.arg, timeout_ms=cmd.timeout_ms or 5000)
+        if out.startswith("WAITED"):
+            _retarget_type_to_active()
+        return out
+    if cmd.action == "wait_focus":
+        out = desktop.wait_for_class(
+            cmd.arg, timeout_ms=cmd.timeout_ms or 5000, before_addrs=None)
+        if out.startswith("WAITED"):
+            _retarget_type_to_active()
+        return out
     if cmd.action == "close_active":
         return desktop.close("")
     if cmd.action == "close_app":
@@ -443,10 +640,21 @@ def run(cmd: LocalCmd, cfg: dict, harness: dict | None = None) -> str:
     if cmd.action == "type":
         out = system.type_text(cmd.arg)
         if cmd.press_enter and out.startswith("TYPED"):
-            return f"{out}; {press_keys('Return')}"
+            typed = f"{out}; {press_keys('Return')}"
+            # Optional auto-read after enter when in kitty (phase 2)
+            if _in_sequence and str(
+                    cfg.get("agent", {}).get("read_after_type", "false")
+            ).lower() not in ("0", "false", "no", "off"):
+                import time
+                time.sleep(0.25)
+                read = desktop.read_kitty()
+                return f"{typed}; {read}"
+            return typed
         return out
     if cmd.action == "keys":
         return press_keys(cmd.arg)
+    if cmd.action == "read_kitty":
+        return desktop.read_kitty()
     return f"SKIP (unknown local action {cmd.action!r})"
 
 

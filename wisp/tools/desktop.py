@@ -108,15 +108,23 @@ def focus_needle(text: str) -> str:
     return re.sub(r"\s+", " ", q).strip()
 
 
+def _fold_alnum(s: str) -> str:
+    """'Open Router' / 'open-router' → 'openrouter' for fuzzy title match."""
+    return re.sub(r"[^a-z0-9]+", "", (s or "").casefold())
+
+
 def _match_by_title(needle: str) -> dict | None:
-    """Best client whose title contains needle (case-insensitive)."""
+    """Best client whose title contains needle (case/space/punct-insensitive)."""
     if not needle or len(needle) < 2:
         return None
-    n = needle.casefold()
+    n = _fold_alnum(needle)
+    if len(n) < 2:
+        return None
     hits = []
     for w in clients():
         title = w.get("title") or ""
-        if n in title.casefold() and w.get("address"):
+        t = _fold_alnum(title)
+        if n in t and w.get("address"):
             hits.append(w)
     if not hits:
         return None

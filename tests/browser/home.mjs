@@ -33,6 +33,11 @@ for (const name of engines) {
     });
     await page.goto(base, {waitUntil: "networkidle"});
     await ready(page);
+    // A mounted hero either draws its first frame or falls back to the static frame.
+    await page.waitForFunction(() => {
+      const bg = document.querySelector("#hero-bg");
+      return bg.dataset.hero === "static" || bg.dataset.rendered === "true";
+    });
     const hero = await page.locator("#hero-bg").getAttribute("data-hero");
     assert.ok(["webgl", "static"].includes(hero), hero);
     assert.equal(await page.locator("#hero-bg canvas").count(), hero === "webgl" ? 1 : 0);

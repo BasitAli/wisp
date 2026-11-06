@@ -9,6 +9,10 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+# The homepage build (site-app/) needs `npm ci` at the root; the website
+# workflow installs it, the general unit job does not.
+needs_npm = unittest.skipUnless((ROOT / "node_modules/vite").is_dir(),
+                                "run `npm ci --ignore-scripts` at the repository root first")
 
 
 class WorkersBundle(unittest.TestCase):
@@ -31,6 +35,7 @@ class WorkersBundle(unittest.TestCase):
              if route.get("custom_domain") is True},
         )
 
+    @needs_npm
     def test_bundle_carries_security_headers_and_noncacheable_bootstrap(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "published"
@@ -62,6 +67,7 @@ class WorkersBundle(unittest.TestCase):
                 run.assert_not_called()
                 copy.assert_not_called()
 
+    @needs_npm
     def test_build_contains_enhanced_plain_and_reviewed_bootstrap(self):
         script = ROOT / "scripts/site/build_workers.py"
         self.assertTrue(script.is_file(), "missing reproducible Workers asset builder")

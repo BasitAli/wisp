@@ -179,6 +179,7 @@ export function mountRibbonField(host: HTMLElement, { onLost }: { onLost?: () =>
       }
     });
     host.append(canvas);
+    host.dataset.hero = "webgl"; // mounted; data-rendered follows the first frame
     resize();
     wake();
     return stop;

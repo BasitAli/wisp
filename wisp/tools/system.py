@@ -2,9 +2,10 @@
 import pathlib
 import shutil
 import subprocess
+import time
 
 from .. import config
-from ..pipeline import hypr_env, notify
+from ..pipeline import hypr_env, notify, type_target_address
 
 
 def notify_tool(msg: str) -> str:
@@ -32,6 +33,12 @@ def type_text(text: str) -> str:
     if not text:
         return "SKIP (nothing to type)"
     from .. import platform
+    # Overlay / notify can steal seat during STT+Jev; put focus back
+    # on the window that was active when PTT started.
+    addr = type_target_address()
+    if addr:
+        platform._try(platform.focus_address_cmds(addr))
+        time.sleep(0.12)
     cmd = platform.type_text_cmd(text)
     if not cmd:
         return (f"SKIP (no typer — {platform.missing_deps_hint()})")

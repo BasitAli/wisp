@@ -335,6 +335,15 @@ def _try(cmds: list[list], timeout: int = 8) -> bool:
     return False
 
 
+def focus_address_cmds(addr: str) -> list[list]:
+    """Focus by Hyprland window address (0x…)."""
+    if not addr or current() != "linux":
+        return []
+    a = addr if addr.startswith("0x") else f"0x{addr}"
+    return [_eval(f'hl.dsp.focus({{window="address:{a}"}})'),
+            _hypr("dispatch", "hl.dsp.focus({window=\"address:" + a + "\"})")]
+
+
 def focus_cmds(cls: str) -> list[list]:
     o = current()
     if o == "linux":
@@ -368,12 +377,15 @@ def close_cmds(cls: str) -> list[list]:
     if o == "linux":
         dt = desktop()
         if dt in ("hyprland", "unknown"):
+            # Prefer Lua dsp (Hyprland 0.57); legacy closewindow/killactive
+            # often fail the same way focuswindow did.
             if not cls:
                 return [_eval("hl.dsp.window.close()"),
-                        _hypr("killactive")]
+                        _hypr("dispatch", "hl.dsp.window.close()")]
             return [_eval(
                 f'hl.dsp.window.close({{window="class:^{cls}"}})'),
-                _hypr("closewindow", f"class:^{cls}")]
+                _hypr("dispatch",
+                      f'hl.dsp.window.close({{window="class:^{cls}"}})')]
         if dt in ("kde", "x11"):
             if not cls:
                 return ([["xdotool", "getactivewindow", "windowclose"]]
@@ -543,17 +555,18 @@ def missing_deps_hint() -> str:
 
 
 def active_window() -> dict:
-    """Focused window as {"class","title"}; {} when unsupported/empty."""
+    """Focused window as {"class","title","address"}; {} when unsupported."""
     o = current()
     if o == "linux":
         if not shutil.which("hyprctl"):
             return {}
         r = subprocess.run(["hyprctl", "activewindow", "-j"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, env=_env())
         try:
             w = json.loads(r.stdout)
             return {"class": w.get("class", ""),
-                    "title": w.get("title", "")}
+                    "title": w.get("title", ""),
+                    "address": w.get("address", "")}
         except json.JSONDecodeError:
             return {}
     if o == "macos":

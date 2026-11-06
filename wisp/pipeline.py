@@ -45,10 +45,9 @@ JEV_QUESTIONS = {
                    "on screen or inside an app: 'open X on the Y page', "
                    "'go to', 'find', 'click', 'and then', any sequence "
                    "of actions — computer use",
-            "dictation": "the user wants to dictate — type the words "
-                         "they speak into the focused app — 'dictate', "
-                         "'type this', 'take dictation', 'write this "
-                         "down'",
+            "dictation": "the user wants spoken words typed into the "
+                         "focused app — trigger word 'type' (also "
+                         "'type this', 'dictate', 'write this down')",
             "answer": "the user is asking a question or chatting — "
                       "respond in text, no desktop action",
             "clarify": "the request is too ambiguous to act on",
@@ -117,6 +116,15 @@ def hypr_env() -> dict:
             env["WAYLAND_DISPLAY"] = s.name
             break
     return env
+
+
+# Window that had focus when PTT started — restored before type_text so
+# the noctalia-wisp overlay (or anything else) can't eat the keystrokes.
+_type_target_address = ""
+
+
+def type_target_address() -> str:
+    return _type_target_address
 
 
 def notify(msg: str) -> None:
@@ -237,9 +245,13 @@ def transcribe(wav: pathlib.Path, cfg: dict) -> str:
     model = config.whisper_model(cfg)
     if not (config.WHISPER_BIN.exists() and model.exists()):
         raise RuntimeError(f"whisper.cpp missing: {config.WHISPER_BIN} / {model}")
-    r = subprocess.run(
-        [str(config.WHISPER_BIN), "-m", str(model), "-nt", "-f", str(wav)],
-        capture_output=True, text=True, timeout=120)
+    cmd = [str(config.WHISPER_BIN), "-m", str(model), "-nt", "-f", str(wav)]
+    # vocab priming — same prompt openai STT already used; local path
+    # ignored it, so names like "slack" became luck/Select/Groom
+    prompt = (cfg.get("stt") or {}).get("prompt", "").strip()
+    if prompt:
+        cmd.extend(["--prompt", prompt])
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     return " ".join(r.stdout.split())
 
 
@@ -407,20 +419,28 @@ def is_low_confidence(answers: dict, cfg: dict) -> bool:
     """Gate on app/target confidence — action confidence no longer kills
     correct launches (the 'retro-large' bug). Launch is a whitelisted
     action: high app confidence + acceptable risk executes regardless of
-    how Jev scored the action question."""
+    how Jev scored the action question.
+
+    Dictation/answer type into the focused window or reply in-place —
+    app is irrelevant (Jev often scores app=none at 0.6–0.7 and the
+    chooser pops 'app:none' for no reason)."""
+    route = answers.get("route", {}).get("choice")
+    if route in ("dictation", "answer"):
+        return False
     app_conf = answers.get("app", {}).get("confidence", 1)
     thresh = float(cfg.get("agent", {}).get("confidence_ambiguous", "0.8"))
     return app_conf < thresh
 
 
+# Primary trigger is "type"; older "dictate" aliases still strip.
 _DICTATE_PREFIX = re.compile(
-    r"^\s*(please\s+)?(dictate|dictation|take dictation|type this|"
-    r"type|write this down|write down)[:,.\s—-]+",
+    r"^\s*(please\s+)?(type this|type|dictate|dictation|"
+    r"take dictation|write this down|write down)[:,.\s—-]+",
     re.IGNORECASE)
 
 
 def dictation_text(text: str) -> str:
-    """Strip a leading dictate command prefix; keep the rest verbatim."""
+    """Strip a leading type/dictate command prefix; keep the rest verbatim."""
     return _DICTATE_PREFIX.sub("", text, count=1).strip() or text
 
 
@@ -452,9 +472,20 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
     # instruction, so it skips the risk gate like launch/answer. Same for
     # a safe-tier tool pick even when the route guess was off.
     tool_choice = answers.get("tool", {}).get("choice", "")
+
+    # Close before launch/risk: Jev often sets route=launch + action=close
+    # ("quit vscode"), and our launch-if-running then FOCUSES instead.
+    if action == "close" or tool_choice == "close":
+        from .tools import desktop as _desk
+        cls = (_desk.class_for_app(app, cfg, harness)
+               if app and app != "none" else None)
+        if app and app != "none" and not cls:
+            return f"SKIP (no running window to close for {app})"
+        return tools.run("close", cls or "", cfg, harness)
+
     gated = route not in ("launch", "answer", "dictation") and \
-        action not in ("launch", "answer")
-    if gated and (tool_choice in ("launch", "answer")
+        action not in ("launch", "answer", "close")
+    if gated and (tool_choice in ("launch", "answer", "close", "focus")
                   or tools.risk_of(tool_choice) == "safe"):
         gated = False
     if gated and risk > threshold:
@@ -486,6 +517,15 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
             if not app or app == "none":
                 return "SKIP (launch but no app identified)"
             return tools.run("launch", app, cfg, harness)
+        if tool_name == "focus":
+            # focus needs a Hyprland class, not the raw transcript
+            from .tools import desktop as _desk
+            cls = (_desk.class_for_app(app, cfg, harness)
+                   if app and app != "none" else None)
+            if not cls:
+                return ("SKIP (focus but no running window for "
+                        f"{app or detail!r})")
+            return tools.run("focus", cls, cfg, harness)
         tier = tools.risk_of(tool_name)
         if tier == "shell":
             if cfg.get("agent", {}).get("allow_shell", "false") != "true":
@@ -507,6 +547,10 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
             return "SKIP (launch route but no app identified)"
         return tools.run("launch", app, cfg, harness)
     if route == "answer" or action == "answer" or app == "none":
+        # answers=false → no Maverick chat / screenshot Q&A (hands-only mode)
+        if str(cfg.get("agent", {}).get("answers", "true")).lower() \
+                in ("0", "false", "no", "off"):
+            return "SKIP (answers disabled)"
         return "ANSWERED"
     if action in tools.REGISTRY:
         return tools.run(action, detail, cfg, harness)
@@ -636,6 +680,9 @@ def run_listen(cfg: dict, state, wait_for_choice=None,
     _trace.emit(turn, "listen_start", "lifecycle",
                 {"seconds": secs, "model": model})
     try:
+        global _type_target_address
+        from . import platform as _plat
+        _type_target_address = _plat.active_window().get("address", "") or ""
         if wav is None:
             state.transition("listening", transcript="", result="",
                              answer="", choices=[], points=[], error="")
@@ -703,6 +750,11 @@ def run_listen(cfg: dict, state, wait_for_choice=None,
         if answers.get("route", {}).get("choice") == "launch" \
                 and complex_launch(text):
             answers["route"]["choice"] = "act"
+        # "type …" keyword wins even if spoken text later says
+        # "open …" (that content is for the keyboard, not a launch)
+        if re.match(r"^\s*(please\s+)?type\b", text, re.I) \
+                or _DICTATE_PREFIX.match(text):
+            answers.setdefault("route", {})["choice"] = "dictation"
         low_conf = is_low_confidence(answers, cfg)
         corrected = None
         if low_conf:

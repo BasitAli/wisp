@@ -103,6 +103,11 @@ def focus_needle(text: str) -> str:
     """'Focus OpenRouter' / 'switch to gmail' → needle for title match."""
     if not text:
         return ""
+    # Whisper sometimes appends primed commands ("Focus outlook. Open firefox.")
+    # — keep only the first clause.
+    text = re.split(
+        r"[.!?]\s+(?:open|focus|launch|close|quit|type|switch)\b",
+        text, maxsplit=1, flags=re.I)[0]
     q = _FOCUS_PREFIX.sub("", text).strip().rstrip(".!?")
     q = _FOCUS_NOISE.sub(" ", q)
     return re.sub(r"\s+", " ", q).strip()

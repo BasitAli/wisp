@@ -145,7 +145,63 @@ def record(seconds: int, state=None) -> pathlib.Path:
         return record_stop(rec, state)
 
 
-def record_start(state=None) -> dict:
+def _pause_media_enabled(cfg: dict | None = None) -> bool:
+    cfg = cfg or config.load_config()
+    return str((cfg.get("audio") or {}).get("pause_media", "true")).lower() \
+        not in ("0", "false", "no", "off")
+
+
+def pause_playing_media(cfg: dict | None = None) -> list[str]:
+    """Pause MPRIS players that are Playing; return names to resume later."""
+    if not _pause_media_enabled(cfg):
+        return []
+    import shutil
+    if not shutil.which("playerctl"):
+        return []
+    try:
+        listed = subprocess.run(
+            ["playerctl", "-l"], capture_output=True, text=True, timeout=2)
+    except Exception:
+        return []
+    if listed.returncode != 0:
+        return []
+    paused: list[str] = []
+    for name in (listed.stdout or "").splitlines():
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            st = subprocess.run(
+                ["playerctl", "-p", name, "status"],
+                capture_output=True, text=True, timeout=2)
+        except Exception:
+            continue
+        if (st.stdout or "").strip() != "Playing":
+            continue
+        r = subprocess.run(
+            ["playerctl", "-p", name, "pause"],
+            capture_output=True, timeout=2)
+        if r.returncode == 0:
+            paused.append(name)
+    return paused
+
+
+def resume_paused_media(players: list[str] | None) -> None:
+    if not players:
+        return
+    import shutil
+    if not shutil.which("playerctl"):
+        return
+    for name in players:
+        try:
+            subprocess.run(
+                ["playerctl", "-p", name, "play"],
+                capture_output=True, timeout=2)
+        except Exception:
+            pass
+
+
+def record_start(state=None, cfg: dict | None = None) -> dict:
     """Toggle capture: spawn the recorder unbounded + the level sampler.
     Returns a handle for record_stop()."""
     out = config.CFG_DIR / "utterance.wav"
@@ -156,6 +212,7 @@ def record_start(state=None) -> dict:
     if cmd is None:
         raise RuntimeError(
             f"no recorder found — {platform.missing_deps_hint()}")
+    paused = pause_playing_media(cfg)
     stop_ev = threading.Event()
     sampler = threading.Thread(target=_amplitude_sampler,
                                args=(None, state, stop_ev), daemon=True)
@@ -163,7 +220,8 @@ def record_start(state=None) -> dict:
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, env=hypr_env())
     return {"proc": proc, "out": out, "sampler_stop": stop_ev,
-            "sampler": sampler, "t0": time.monotonic()}
+            "sampler": sampler, "t0": time.monotonic(),
+            "paused_media": paused}
 
 
 def record_stop(rec: dict, state=None) -> pathlib.Path:
@@ -186,6 +244,8 @@ def _record_finish(rec: dict, state=None, settled: bool = False
     if not settled:
         # bounded path: proc already exited or timed out
         rec["sampler_stop"].set()
+    # Resume as soon as speaking ends (STT/Jev can run with media playing)
+    resume_paused_media(rec.pop("paused_media", None))
     time.sleep(0.3)
     if state:
         state.set_level(0.0)
@@ -246,9 +306,15 @@ def transcribe(wav: pathlib.Path, cfg: dict) -> str:
     if not (config.WHISPER_BIN.exists() and model.exists()):
         raise RuntimeError(f"whisper.cpp missing: {config.WHISPER_BIN} / {model}")
     cmd = [str(config.WHISPER_BIN), "-m", str(model), "-nt", "-f", str(wav)]
-    # vocab priming — same prompt openai STT already used; local path
-    # ignored it, so names like "slack" became luck/Select/Groom
+    # vocab priming — config list + tokens from commands.toml
     prompt = (cfg.get("stt") or {}).get("prompt", "").strip()
+    try:
+        from . import local_router as _lr
+        extra = _lr.vocab_tokens()
+        if extra:
+            prompt = (prompt + " " + " ".join(extra)).strip()
+    except Exception:
+        pass
     if prompt:
         cmd.extend(["--prompt", prompt])
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -505,6 +571,9 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
     if route == "agent":
         return agents.spawn(detail or app or "unnamed task", cfg)
     if route == "act":
+        if str(cfg.get("agent", {}).get("act", "true")).lower() \
+                in ("0", "false", "no", "off"):
+            return "SKIP (act disabled)"
         from . import act
         return act.run_act_loop(detail, cfg, state=state,
                                 harness=harness, confirm=confirm)
@@ -513,6 +582,9 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
         # prefix, not content — strip it
         return tools.run("type_text", dictation_text(detail), cfg)
     if route == "learn":
+        if str(cfg.get("agent", {}).get("act", "true")).lower() \
+                in ("0", "false", "no", "off"):
+            return "SKIP (act disabled)"
         from . import act
         prompt = ("Author a reusable skill for this request using the "
                   "skill_manage and skill_view tools. If a skill on this "
@@ -562,6 +634,9 @@ def execute(answers: dict, cfg: dict, harness: dict | None = None,
             # transcript, and executing it verbatim turns every
             # misroute into `sh -c "<your sentence>"`. The act loop's
             # model composes a real argv from the request instead.
+            if str(cfg.get("agent", {}).get("act", "true")).lower() \
+                    in ("0", "false", "no", "off"):
+                return "SKIP (act disabled)"
             from . import act
             return act.run_act_loop(detail, cfg, state=state,
                                     harness=harness, confirm=confirm)
@@ -735,6 +810,42 @@ def run_listen(cfg: dict, state, wait_for_choice=None,
         from .tools import adapters
         harness = {"apps": adapters.best_catalog(),
                    "context": adapters.context()}
+        # Local-first keywords; optional jev=false → dictation fallback, no OpenRouter
+        local_on = str(cfg.get("agent", {}).get("local_first", "true")) \
+            .lower() not in ("0", "false", "no", "off")
+        jev_on = str(cfg.get("agent", {}).get("jev", "true")).lower() \
+            not in ("0", "false", "no", "off")
+        from . import local_router
+        local_cmd = local_router.match(text) if local_on else None
+        if local_cmd is None and not jev_on:
+            local_cmd = local_router.fallback_dictation(text)
+            route_tag = "local_fallback"
+        else:
+            route_tag = "local"
+        if local_cmd is not None:
+            state.transition("acting")
+            t_act = time.monotonic()
+            result = local_router.run(local_cmd, cfg, harness)
+            timing["jev_ms"] = 0
+            timing["act_ms"] = round((time.monotonic() - t_act) * 1000)
+            _trace.emit(turn, "dispatch", "act",
+                        {"route": route_tag, "action": local_cmd.action,
+                         "arg": local_cmd.arg, "result": result})
+            state.transition("done", result=result)
+            notify(result)
+            log_decision({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "transcript": text,
+                "router": route_tag,
+                "local": {"action": local_cmd.action,
+                          "arg": local_cmd.arg,
+                          "press_enter": local_cmd.press_enter},
+                "result": result,
+                "timing_ms": timing,
+            })
+            from . import session
+            session.append_turn(text, route=route_tag, reply=result)
+            return 0
         win = active_window()
         context = harness.get("context", "")
         if win.get("title"):
